@@ -6,7 +6,7 @@ type NameStyle = "as-drawn" | "db-default" | "pascal" | "camel" | "snake" | "scr
 
 interface CliArgs {
   inputFile: string;
-  outputFile: string;
+  outputFile?: string;
   flavor: SqlFlavor;
   tableNameStyle: NameStyle;
   fieldNameStyle: NameStyle;
@@ -212,7 +212,7 @@ class NameStyler {
 
 class CliParser {
   static parse(argv: string[]): CliArgs {
-    const positional = argv.filter((x) => !x.startsWith("--"));
+    const positional = argv.filter((x) => !x.startsWith("-"));
 
     let inputFile = "";
     let outputFile = "";
@@ -223,6 +223,8 @@ class CliParser {
 
     if (positional.length >= 3) {
       [inputFile, flavor, outputFile] = positional;
+    } else if (positional.length === 2) {
+      [inputFile, flavor] = positional;
     }
 
     for (let i = 0; i < argv.length; i++) {
@@ -244,13 +246,14 @@ class CliParser {
       if (token === "--overwrite" || token === "-f") overwrite = true;
     }
 
-    if (!inputFile || !outputFile || !flavor) {
+    if (!inputFile || !flavor) {
       throw new Error([
         "Usage:",
-        "  ts-node draw2sql/draw2sql.ts <input.drawio> <sqlFlavor> <output.sql>",
-        "  ts-node draw2sql/draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> --output <output.sql>",
-        "  ts-node draw2sql/draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> --output <output.sql> --table-name-style <style> --field-name-style <style>",
-        "  ts-node draw2sql/draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> --output <output.sql> --overwrite",
+        "  ts-node draw2sql.ts <input.drawio> <sqlFlavor> [output.sql]",
+        "  ts-node draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> [--output <output.sql>]",
+        "  ts-node draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> [--output <output.sql>] [--table-name-style <style>] [--field-name-style <style>]",
+        "",
+        "If --output is omitted, the output file is derived from the input filename with a .<flavor>.sql extension.",
         "",
         "Supported sqlFlavor: postgres | mysql | sqlserver | sqlite | oracle",
         "Supported styles: as-drawn | db-default | pascal | camel | snake | screaming_snake | kebab",
@@ -265,7 +268,7 @@ class CliParser {
 
     return {
       inputFile,
-      outputFile,
+      outputFile: outputFile || undefined,
       flavor: normalizedFlavor,
       tableNameStyle,
       fieldNameStyle,
@@ -979,17 +982,27 @@ class Draw2SqlApp {
     const parsed = this.parser.parse(xml);
     const generated = this.generator.generate(parsed, args.flavor, { tableNameStyle: args.tableNameStyle, fieldNameStyle: args.fieldNameStyle });
 
-    this.ensureDirForFile(args.outputFile);
-    if (!args.overwrite && fs.existsSync(args.outputFile)) {
-      throw new Error(`Refusing to overwrite existing file: ${args.outputFile}. Pass --overwrite (or -f) to replace it.`);
+    const outputFile = args.outputFile ?? this.deriveOutputFile(args.inputFile, generated.flavor);
+
+    if (!args.overwrite && fs.existsSync(outputFile)) {
+      console.error(`Output file already exists: ${outputFile}`);
+      console.error(`Pass --overwrite (or -f) to replace it.`);
+      process.exit(1);
     }
-    fs.writeFileSync(args.outputFile, generated.sql, "utf8");
+    this.ensureDirForFile(outputFile);
+    fs.writeFileSync(outputFile, generated.sql, "utf8");
 
     console.log("draw2sql complete.");
     console.log(`Input: ${args.inputFile}`);
     console.log(`Flavor: ${generated.flavor}`);
     console.log(`Tables: ${parsed.tables.length}`);
-    console.log(`Output: ${args.outputFile}`);
+    console.log(`Output: ${outputFile}`);
+  }
+
+  private deriveOutputFile(inputFile: string, flavor: SqlFlavor): string {
+    const ext = path.extname(inputFile);
+    const base = inputFile.slice(0, inputFile.length - ext.length);
+    return `${base}.${flavor}.sql`;
   }
 
   private ensureDirForFile(filePath: string): void {
