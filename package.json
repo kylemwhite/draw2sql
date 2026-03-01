@@ -1,0 +1,20 @@
+{
+  "name": "draw2sql",
+  "version": "1.0.0",
+  "description": "Generate SQL DDL from a draw.io XML ER diagram",
+  "main": "dist/draw2sql.js",
+  "bin": {
+    "draw2sql": "dist/draw2sql.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node draw2sql.ts"
+  },
+  "keywords": ["draw.io", "sql", "ddl", "erd", "diagram"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^22.0.0"
+  }
+}
