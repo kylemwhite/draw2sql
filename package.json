@@ -5,7 +5,7 @@
   "author": "Kyle White",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kylemwhite/draw2sql"
+    "url": "git+https://github.com/kylemwhite/draw2sql.git"
   },
   "main": "dist/draw2sql.js",
   "bin": {
