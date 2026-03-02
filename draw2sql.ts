@@ -1,15 +1,18 @@
+#!/usr/bin/env node
+
 import fs from "node:fs";
 import path from "node:path";
 
-type SqlFlavor = "postgres" | "mysql" | "sqlserver" | "sqlite" | "oracle";
+type SqlDialect = "postgres" | "mariadb" | "sqlserver" | "sqlite" | "oracle";
 type NameStyle = "as-drawn" | "db-default" | "pascal" | "camel" | "snake" | "screaming_snake" | "kebab";
 
 interface CliArgs {
   inputFile: string;
   outputFile?: string;
-  flavor: SqlFlavor;
-  tableNameStyle: NameStyle;
-  fieldNameStyle: NameStyle;
+  dialect: SqlDialect;
+  schema?: string;
+  tableCase: NameStyle;
+  fieldCase: NameStyle;
   overwrite: boolean;
 }
 
@@ -48,23 +51,23 @@ interface ParsedDiagram {
 }
 
 interface GeneratorSettings {
-  flavor: SqlFlavor;
+  dialect: SqlDialect;
   schema?: string;
 }
 
 interface NamingSettings {
-  tableNameStyle: NameStyle;
-  fieldNameStyle: NameStyle;
+  tableCase: NameStyle;
+  fieldCase: NameStyle;
 }
 
 const DEFAULT_REF_COLUMN = "Id";
 const MARKER_WORDS = new Set(["PK", "FK", "NN", "NOT NULL", "UNIQUE", "UQ"]);
 
-class FlavorResolver {
-  static normalize(input: string): SqlFlavor | null {
+export class DialectResolver {
+  static normalize(input: string): SqlDialect | null {
     const normalized = input.trim().toLowerCase();
     if (normalized === "postgres" || normalized === "postgresql") return "postgres";
-    if (normalized === "mysql") return "mysql";
+    if (normalized === "mariadb" || normalized === "mysql") return "mariadb";
     if (normalized === "sqlserver" || normalized === "mssql") return "sqlserver";
     if (normalized === "sqlite" || normalized === "sqlite3") return "sqlite";
     if (normalized === "oracle" || normalized === "oracledb") return "oracle";
@@ -72,7 +75,7 @@ class FlavorResolver {
   }
 }
 
-class NameStyleResolver {
+export class NameStyleResolver {
   static normalize(input: string): NameStyle | null {
     const normalized = input.trim().toLowerCase();
     if (normalized === "as-drawn" || normalized === "asdrawn" || normalized === "as_drawn") return "as-drawn";
@@ -86,20 +89,20 @@ class NameStyleResolver {
   }
 }
 
-class NameStyler {
-  private static resolveDbDefault(flavor: SqlFlavor): Exclude<NameStyle, "db-default"> {
-    if (flavor === "sqlserver") return "pascal";
-    if (flavor === "oracle") return "screaming_snake";
+export class NameStyler {
+  private static resolveDbDefault(dialect: SqlDialect): Exclude<NameStyle, "db-default"> {
+    if (dialect === "sqlserver") return "pascal";
+    if (dialect === "oracle") return "screaming_snake";
     return "snake";
   }
 
-  static resolve(style: NameStyle, flavor: SqlFlavor): Exclude<NameStyle, "db-default"> {
-    return style === "db-default" ? NameStyler.resolveDbDefault(flavor) : style;
+  static resolve(style: NameStyle, dialect: SqlDialect): Exclude<NameStyle, "db-default"> {
+    return style === "db-default" ? NameStyler.resolveDbDefault(dialect) : style;
   }
 
-  static apply(tables: TableDef[], flavor: SqlFlavor, naming: NamingSettings): { tableStyle: Exclude<NameStyle, "db-default">; fieldStyle: Exclude<NameStyle, "db-default"> } {
-    const tableStyle = NameStyler.resolve(naming.tableNameStyle, flavor);
-    const fieldStyle = NameStyler.resolve(naming.fieldNameStyle, flavor);
+  static apply(tables: TableDef[], dialect: SqlDialect, naming: NamingSettings): { tableStyle: Exclude<NameStyle, "db-default">; fieldStyle: Exclude<NameStyle, "db-default"> } {
+    const tableStyle = NameStyler.resolve(naming.tableCase, dialect);
+    const fieldStyle = NameStyler.resolve(naming.fieldCase, dialect);
 
     const usedTableNames = new Set<string>();
     const tableOldToNew = new Map<string, string>();
@@ -210,68 +213,118 @@ class NameStyler {
   }
 }
 
-class CliParser {
+export class CliParser {
+  static readonly HELP = [
+    "",
+    "+--------------------------------------------------------------+",
+    "|   draw2sql:  Convert draw.io ER diagram into SQL DDL         |",
+    "+--------------------------------------------------------------+",
+    "",
+    "Usage:",
+    "  draw2sql --input <file> --dialect <dialect> [options]",
+    "  draw2sql <input.drawio> <dialect> [output.sql] [options]",
+    "",
+    "Arguments:",
+    "  -i, --input <file>              Input .drawio diagram file (or 1st positional arg)",
+    "  -d, --dialect <dialect>         SQL dialect to generate (or 2nd positional arg; or set in diagram)",
+    "  -o, --output <file>             Output SQL file (default: <input>.<dialect>.sql)",
+    "  -f, --overwrite                 Overwrite output file if it exists",
+    "  -h, --help                      Show this help",
+    "      --schema <name>             Qualify table names with a schema prefix; omit to use the database default (ignored for sqlite)",
+    "      --table-case <case>         Table naming case (default: db-default)",
+    "      --field-case <case>         Field/column naming case (default: db-default)",
+    "",
+    "Examples:",
+    "  draw2sql -i schema.drawio -d postgres",
+    "  draw2sql -i schema.drawio -d mariadb -o out.sql -f",
+    "  draw2sql -i schema.drawio -d oracle --schema MYAPP",
+    "  draw2sql -i schema.drawio -d sqlserver --table-case pascal --field-case camel",
+    "  draw2sql schema.drawio oracle",
+    "",
+    "Diagram options:",
+    "  Add a text block like this anywhere in your diagram:",
+    "  +--------------------+",
+    "  | draw2sql           |",
+    "  | dialect = oracle   |",
+    "  | schema  = myschema |",
+    "  +--------------------+",
+    "  Recognized keys: dialect (overrides -d), schema",
+    "",
+    "Dialects:",
+    "  postgres",
+    "  mariadb  (mysql is accepted as an alias)",
+    "  sqlserver",
+    "  sqlite",
+    "  oracle",
+    "",
+    "Cases:",
+    "  as-drawn        No transformation — use names exactly as drawn",
+    "  db-default      Dialect's conventional case (default)",
+    "  pascal          MyTableName        (sqlserver default)",
+    "  camel           myTableName",
+    "  snake           my_table_name      (postgres, mariadb, sqlite default)",
+    "  screaming_snake MY_TABLE_NAME      (oracle default)",
+    "  kebab           my-table-name",
+  ].join("\n");
+
   static parse(argv: string[]): CliArgs {
+    if (argv.some((a) => a === "--help" || a === "-h")) {
+      console.log(CliParser.HELP);
+      process.exit(0);
+    }
+
     const positional = argv.filter((x) => !x.startsWith("-"));
 
     let inputFile = "";
     let outputFile = "";
-    let flavor = "";
-    let tableNameStyle: NameStyle = "db-default";
-    let fieldNameStyle: NameStyle = "db-default";
+    let dialect = "";
+    let schema = "";
+    let tableCase: NameStyle = "db-default";
+    let fieldCase: NameStyle = "db-default";
     let overwrite = false;
 
     if (positional.length >= 3) {
-      [inputFile, flavor, outputFile] = positional;
+      [inputFile, dialect, outputFile] = positional;
     } else if (positional.length === 2) {
-      [inputFile, flavor] = positional;
+      [inputFile, dialect] = positional;
     }
 
     for (let i = 0; i < argv.length; i++) {
       const token = argv[i];
       const next = argv[i + 1];
-      if (token === "--input" && next) inputFile = next;
-      if (token === "--output" && next) outputFile = next;
-      if (token === "--flavor" && next) flavor = next;
-      if ((token === "--table-name-style" || token === "--table-style") && next) {
+      if ((token === "--input" || token === "-i") && next) inputFile = next;
+      if ((token === "--output" || token === "-o") && next) outputFile = next;
+      if ((token === "--dialect" || token === "-d") && next) dialect = next;
+      if (token === "--schema" && next) schema = next;
+      if ((token === "--table-case" || token === "--table-style") && next) {
         const normalized = NameStyleResolver.normalize(next);
-        if (!normalized) throw new Error(`Unsupported table name style: ${next}`);
-        tableNameStyle = normalized;
+        if (!normalized) throw new Error(`Unsupported table case: ${next}`);
+        tableCase = normalized;
       }
-      if ((token === "--field-name-style" || token === "--field-style" || token === "--column-name-style" || token === "--column-style") && next) {
+      if ((token === "--field-case" || token === "--column-case" || token === "--field-style" || token === "--column-style") && next) {
         const normalized = NameStyleResolver.normalize(next);
-        if (!normalized) throw new Error(`Unsupported field name style: ${next}`);
-        fieldNameStyle = normalized;
+        if (!normalized) throw new Error(`Unsupported field case: ${next}`);
+        fieldCase = normalized;
       }
       if (token === "--overwrite" || token === "-f") overwrite = true;
     }
 
-    if (!inputFile || !flavor) {
-      throw new Error([
-        "Usage:",
-        "  ts-node draw2sql.ts <input.drawio> <sqlFlavor> [output.sql]",
-        "  ts-node draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> [--output <output.sql>]",
-        "  ts-node draw2sql.ts --input <input.drawio> --flavor <sqlFlavor> [--output <output.sql>] [--table-name-style <style>] [--field-name-style <style>]",
-        "",
-        "If --output is omitted, the output file is derived from the input filename with a .<flavor>.sql extension.",
-        "",
-        "Supported sqlFlavor: postgres | mysql | sqlserver | sqlite | oracle",
-        "Supported styles: as-drawn | db-default | pascal | camel | snake | screaming_snake | kebab",
-        "Flags: --overwrite | -f",
-      ].join("\n"));
+    if (!inputFile || !dialect) {
+      throw new Error(CliParser.HELP);
     }
 
-    const normalizedFlavor = FlavorResolver.normalize(flavor);
-    if (!normalizedFlavor) {
-      throw new Error(`Unsupported SQL flavor: ${flavor}`);
+    const normalizedDialect = DialectResolver.normalize(dialect);
+    if (!normalizedDialect) {
+      throw new Error(`Unsupported SQL dialect: ${dialect}`);
     }
 
     return {
       inputFile,
       outputFile: outputFile || undefined,
-      flavor: normalizedFlavor,
-      tableNameStyle,
-      fieldNameStyle,
+      dialect: normalizedDialect,
+      schema: schema || undefined,
+      tableCase,
+      fieldCase,
       overwrite,
     };
   }
@@ -303,7 +356,7 @@ class XmlText {
   }
 }
 
-class DrawIoDiagramParser {
+export class DrawIoDiagramParser {
   parse(xml: string): ParsedDiagram {
     const cells = this.parseCells(xml);
     const cellsById = new Map(cells.map((c) => [c.id, c]));
@@ -625,36 +678,36 @@ class DrawIoDiagramParser {
   }
 }
 
-class SqlTypeMapper {
-  constructor(private readonly flavor: SqlFlavor) {}
+export class SqlTypeMapper {
+  constructor(private readonly dialect: SqlDialect) {}
 
   map(rawType: string): string {
     const t = rawType.trim().toLowerCase();
 
     if (t === "string") {
-      if (this.flavor === "sqlserver") return "nvarchar(255)";
-      if (this.flavor === "oracle") return "varchar2(255)";
+      if (this.dialect === "sqlserver") return "nvarchar(255)";
+      if (this.dialect === "oracle") return "varchar2(255)";
       return "text";
     }
 
     if (t === "bool") {
-      if (this.flavor === "sqlserver") return "bit";
-      if (this.flavor === "oracle") return "number(1)";
+      if (this.dialect === "sqlserver") return "bit";
+      if (this.dialect === "oracle") return "number(1)";
       return "boolean";
     }
 
     if (t === "datetime") {
-      if (this.flavor === "postgres") return "timestamptz";
-      if (this.flavor === "sqlserver") return "datetime2";
-      if (this.flavor === "oracle") return "timestamp";
+      if (this.dialect === "postgres") return "timestamptz";
+      if (this.dialect === "sqlserver") return "datetime2";
+      if (this.dialect === "oracle") return "timestamp";
     }
 
-    if (t === "uuid" && this.flavor === "mysql") return "char(36)";
-    if (t === "uuid" && this.flavor === "sqlserver") return "uniqueidentifier";
-    if (t === "uuid" && this.flavor === "oracle") return "raw(16)";
+    if (t === "uuid" && this.dialect === "mariadb") return "char(36)";
+    if (t === "uuid" && this.dialect === "sqlserver") return "uniqueidentifier";
+    if (t === "uuid" && this.dialect === "oracle") return "raw(16)";
 
-    if ((t === "json" || t === "jsonb") && this.flavor === "oracle") return "clob";
-    if (t === "text" && this.flavor === "oracle") return "clob";
+    if ((t === "json" || t === "jsonb") && this.dialect === "oracle") return "clob";
+    if (t === "text" && this.dialect === "oracle") return "clob";
 
     return rawType;
   }
@@ -663,81 +716,81 @@ class SqlTypeMapper {
     const lower = columnName.toLowerCase();
 
     if (lower.endsWith("key")) {
-      if (this.flavor === "sqlserver") return "nvarchar(255)";
-      if (this.flavor === "oracle") return "varchar2(255)";
+      if (this.dialect === "sqlserver") return "nvarchar(255)";
+      if (this.dialect === "oracle") return "varchar2(255)";
       return "text";
     }
 
     if (lower.includes("external") && lower.endsWith("id")) {
-      if (this.flavor === "sqlserver") return "nvarchar(255)";
-      if (this.flavor === "oracle") return "varchar2(255)";
+      if (this.dialect === "sqlserver") return "nvarchar(255)";
+      if (this.dialect === "oracle") return "varchar2(255)";
       return "text";
     }
 
     if (lower === "id" || lower.endsWith("id")) {
-      if (this.flavor === "postgres") return "uuid";
-      if (this.flavor === "mysql") return "char(36)";
-      if (this.flavor === "sqlserver") return "uniqueidentifier";
-      if (this.flavor === "oracle") return "raw(16)";
+      if (this.dialect === "postgres") return "uuid";
+      if (this.dialect === "mariadb") return "char(36)";
+      if (this.dialect === "sqlserver") return "uniqueidentifier";
+      if (this.dialect === "oracle") return "raw(16)";
       return "text";
     }
 
     if (lower.startsWith("is") || lower.startsWith("has")) {
-      if (this.flavor === "sqlserver") return "bit";
-      if (this.flavor === "sqlite") return "integer";
-      if (this.flavor === "oracle") return "number(1)";
+      if (this.dialect === "sqlserver") return "bit";
+      if (this.dialect === "sqlite") return "integer";
+      if (this.dialect === "oracle") return "number(1)";
       return "boolean";
     }
 
     if (lower.includes("createdat") || lower.includes("updatedat") || lower.includes("deletedat")) {
-      if (this.flavor === "postgres") return "timestamptz";
-      if (this.flavor === "mysql") return "datetime";
-      if (this.flavor === "sqlserver") return "datetime2";
-      if (this.flavor === "oracle") return "timestamp";
+      if (this.dialect === "postgres") return "timestamptz";
+      if (this.dialect === "mariadb") return "datetime";
+      if (this.dialect === "sqlserver") return "datetime2";
+      if (this.dialect === "oracle") return "timestamp";
       return "text";
     }
 
     if (lower.includes("date")) {
-      if (this.flavor === "sqlite") return "text";
-      if (this.flavor === "oracle") return "date";
+      if (this.dialect === "sqlite") return "text";
+      if (this.dialect === "oracle") return "date";
       return "date";
     }
 
     if (lower.includes("amount") || lower.includes("price") || lower.includes("total") || lower.includes("cost")) {
-      return this.flavor === "oracle" ? "number(12,2)" : "decimal(12,2)";
+      return this.dialect === "oracle" ? "number(12,2)" : "decimal(12,2)";
     }
 
     if (lower.includes("count") || lower.includes("qty") || lower.includes("quantity")) {
-      return this.flavor === "oracle" ? "number(10)" : "integer";
+      return this.dialect === "oracle" ? "number(10)" : "integer";
     }
 
     if (lower.includes("json") || lower.includes("metadata")) {
-      if (this.flavor === "postgres") return "jsonb";
-      if (this.flavor === "mysql") return "json";
-      if (this.flavor === "sqlserver") return "nvarchar(max)";
-      if (this.flavor === "oracle") return "clob";
+      if (this.dialect === "postgres") return "jsonb";
+      if (this.dialect === "mariadb") return "json";
+      if (this.dialect === "sqlserver") return "nvarchar(max)";
+      if (this.dialect === "oracle") return "clob";
       return "text";
     }
 
-    if (this.flavor === "sqlserver") return "nvarchar(255)";
-    if (this.flavor === "oracle") return "varchar2(255)";
+    if (this.dialect === "sqlserver") return "nvarchar(255)";
+    if (this.dialect === "oracle") return "varchar2(255)";
     return "text";
   }
 }
 
-class SqlDialect {
+class SqlSyntax {
   constructor(private readonly settings: GeneratorSettings) {}
 
   quoteIdent(name: string): string {
-    if (this.settings.flavor === "mysql") return `\`${name}\``;
-    if (this.settings.flavor === "sqlserver") return `[${name}]`;
+    if (this.settings.dialect === "mariadb") return `\`${name}\``;
+    if (this.settings.dialect === "sqlserver") return `[${name}]`;
     return `"${name}"`;
   }
 
   qualifyTable(name: string): string {
-    if (!this.settings.schema) return this.quoteIdent(name);
+    if (!this.settings.schema || this.settings.dialect === "sqlite") return this.quoteIdent(name);
 
-    if (this.settings.flavor === "sqlserver") {
+    if (this.settings.dialect === "sqlserver") {
       return `${this.quoteIdent(this.settings.schema)}.${this.quoteIdent(name)}`;
     }
 
@@ -747,7 +800,7 @@ class SqlDialect {
   createTable(table: TableDef): string {
     const lines = this.getCreateColumns(table);
 
-    if (this.settings.flavor === "sqlserver") {
+    if (this.settings.dialect === "sqlserver") {
       return [
         `IF OBJECT_ID(N'${table.name}', N'U') IS NULL`,
         "BEGIN",
@@ -758,7 +811,7 @@ class SqlDialect {
       ].join("\n");
     }
 
-    if (this.settings.flavor === "oracle") {
+    if (this.settings.dialect === "oracle") {
       const sql = [
         `CREATE TABLE ${this.qualifyTable(table.name)} (`,
         lines.join(",\n"),
@@ -787,14 +840,14 @@ class SqlDialect {
     const colType = col.inferredType ?? col.rawType ?? "text";
     const nullSql = col.nullable ? "" : " NOT NULL";
 
-    if (this.settings.flavor === "sqlserver") {
+    if (this.settings.dialect === "sqlserver") {
       return [
         `IF COL_LENGTH(N'${tableName}', N'${col.name}') IS NULL`,
         `  ALTER TABLE ${this.qualifyTable(tableName)} ADD ${this.quoteIdent(col.name)} ${colType}${nullSql};`,
       ].join("\n");
     }
 
-    if (this.settings.flavor === "oracle") {
+    if (this.settings.dialect === "oracle") {
       const checkSchema = (this.settings.schema ?? "").toUpperCase();
       const schemaFilter = checkSchema ? ` AND owner = '${checkSchema}'` : "";
       return [
@@ -825,7 +878,7 @@ class SqlDialect {
     const refTableQ = this.qualifyTable(col.referencesTable);
     const refColQ = this.quoteIdent(col.referencesColumn);
 
-    if (this.settings.flavor === "postgres") {
+    if (this.settings.dialect === "postgres") {
       return [
         "DO $$",
         "BEGIN",
@@ -836,7 +889,7 @@ class SqlDialect {
       ].join("\n");
     }
 
-    if (this.settings.flavor === "mysql") {
+    if (this.settings.dialect === "mariadb") {
       return [
         "SET @fk_exists := (",
         "  SELECT COUNT(1)",
@@ -852,14 +905,14 @@ class SqlDialect {
       ].join("\n");
     }
 
-    if (this.settings.flavor === "sqlserver") {
+    if (this.settings.dialect === "sqlserver") {
       return [
         `IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'${constraintName}')`,
         `  ALTER TABLE ${tableQ} ADD CONSTRAINT ${this.quoteIdent(constraintName)} FOREIGN KEY (${colQ}) REFERENCES ${refTableQ} (${refColQ});`,
       ].join("\n");
     }
 
-    if (this.settings.flavor === "oracle") {
+    if (this.settings.dialect === "oracle") {
       const owner = (this.settings.schema ?? "").toUpperCase();
       const ownerFilter = owner ? ` AND owner = '${owner}'` : "";
       return [
@@ -901,14 +954,14 @@ class SqlDialect {
 }
 
 class SqlGenerator {
-  generate(parsed: ParsedDiagram, cliFlavor: SqlFlavor, naming: NamingSettings): { sql: string; flavor: SqlFlavor } {
-    const flavorOverride = parsed.parameters.flavor ?? parsed.parameters.sqlflavor ?? parsed.parameters.sqldialect ?? parsed.parameters.sqldatabase;
-    const effectiveFlavor = flavorOverride ? (FlavorResolver.normalize(flavorOverride) ?? cliFlavor) : cliFlavor;
+  generate(parsed: ParsedDiagram, cliDialect: SqlDialect, naming: NamingSettings, cliSchema?: string): { sql: string; dialect: SqlDialect } {
+    const dialectOverride = parsed.parameters.dialect ?? parsed.parameters.sqldialect ?? parsed.parameters.flavor ?? parsed.parameters.sqlflavor ?? parsed.parameters.sqldatabase;
+    const effectiveDialect = dialectOverride ? (DialectResolver.normalize(dialectOverride) ?? cliDialect) : cliDialect;
 
-    const schema = parsed.parameters.schema ?? parsed.parameters.defaultschema;
-    const settings: GeneratorSettings = { flavor: effectiveFlavor, schema };
-    const mapper = new SqlTypeMapper(settings.flavor);
-    const dialect = new SqlDialect(settings);
+    const schema = cliSchema ?? parsed.parameters.schema ?? parsed.parameters.defaultschema;
+    const settings: GeneratorSettings = { dialect: effectiveDialect, schema };
+    const mapper = new SqlTypeMapper(settings.dialect);
+    const dialect = new SqlSyntax(settings);
 
     for (const table of parsed.tables) {
       for (const col of table.columns) {
@@ -916,13 +969,13 @@ class SqlGenerator {
       }
     }
 
-    const resolvedNaming = NameStyler.apply(parsed.tables, settings.flavor, naming);
+    const resolvedNaming = NameStyler.apply(parsed.tables, settings.dialect, naming);
 
     const header: string[] = [
       "-- Generated by draw2sql",
-      `-- Flavor: ${settings.flavor}`,
-      `-- Table Name Style: ${naming.tableNameStyle} (${resolvedNaming.tableStyle})`,
-      `-- Field Name Style: ${naming.fieldNameStyle} (${resolvedNaming.fieldStyle})`,
+      `-- Dialect: ${settings.dialect}`,
+      `-- Table Case: ${naming.tableCase} (${resolvedNaming.tableStyle})`,
+      `-- Field Case: ${naming.fieldCase} (${resolvedNaming.fieldStyle})`,
       `-- Generated UTC: ${new Date().toISOString()}`,
     ];
 
@@ -939,7 +992,7 @@ class SqlGenerator {
 
     if (parsed.tables.length === 0) {
       header.push("-- No tables detected in draw.io file.");
-      return { sql: `${header.join("\n")}\n`, flavor: settings.flavor };
+      return { sql: `${header.join("\n")}\n`, dialect: settings.dialect };
     }
 
     const sections: string[] = [header.join("\n")];
@@ -966,7 +1019,7 @@ class SqlGenerator {
 
     return {
       sql: `${sections.join("\n\n")}\n`,
-      flavor: settings.flavor,
+      dialect: settings.dialect,
     };
   }
 }
@@ -980,9 +1033,9 @@ class Draw2SqlApp {
     const xml = fs.readFileSync(args.inputFile, "utf8");
 
     const parsed = this.parser.parse(xml);
-    const generated = this.generator.generate(parsed, args.flavor, { tableNameStyle: args.tableNameStyle, fieldNameStyle: args.fieldNameStyle });
+    const generated = this.generator.generate(parsed, args.dialect, { tableCase: args.tableCase, fieldCase: args.fieldCase }, args.schema);
 
-    const outputFile = args.outputFile ?? this.deriveOutputFile(args.inputFile, generated.flavor);
+    const outputFile = args.outputFile ?? this.deriveOutputFile(args.inputFile, generated.dialect);
 
     if (!args.overwrite && fs.existsSync(outputFile)) {
       console.error(`Output file already exists: ${outputFile}`);
@@ -994,15 +1047,15 @@ class Draw2SqlApp {
 
     console.log("draw2sql complete.");
     console.log(`Input: ${args.inputFile}`);
-    console.log(`Flavor: ${generated.flavor}`);
+    console.log(`Dialect: ${generated.dialect}`);
     console.log(`Tables: ${parsed.tables.length}`);
     console.log(`Output: ${outputFile}`);
   }
 
-  private deriveOutputFile(inputFile: string, flavor: SqlFlavor): string {
+  private deriveOutputFile(inputFile: string, dialect: SqlDialect): string {
     const ext = path.extname(inputFile);
     const base = inputFile.slice(0, inputFile.length - ext.length);
-    return `${base}.${flavor}.sql`;
+    return `${base}.${dialect}.sql`;
   }
 
   private ensureDirForFile(filePath: string): void {
@@ -1011,4 +1064,11 @@ class Draw2SqlApp {
   }
 }
 
-new Draw2SqlApp().run(process.argv.slice(2));
+if (require.main === module) {
+  try {
+    new Draw2SqlApp().run(process.argv.slice(2));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}

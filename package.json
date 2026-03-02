@@ -2,16 +2,30 @@
   "name": "draw2sql",
   "version": "1.0.0",
   "description": "Generate SQL DDL from a draw.io XML ER diagram",
+  "author": "Kyle White",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kylemwhite/draw2sql"
+  },
   "main": "dist/draw2sql.js",
   "bin": {
     "draw2sql": "dist/draw2sql.js"
   },
+  "files": [
+    "dist/draw2sql.js"
+  ],
   "scripts": {
     "build": "tsc",
-    "start": "ts-node draw2sql.ts"
+    "test": "ts-node draw2sql.test.ts",
+    "start": "ts-node draw2sql.ts",
+    "prepublishOnly": "tsc",
+    "repack": "npm run build && npm pack && node -e \"const v=require('./package.json').version;require('child_process').execSync('npm install -g draw2sql-'+v+'.tgz',{stdio:'inherit'})\""
   },
   "keywords": ["draw.io", "sql", "ddl", "erd", "diagram"],
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "typescript": "^5.0.0",
     "ts-node": "^10.9.0",

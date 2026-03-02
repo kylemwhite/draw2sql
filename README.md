@@ -1,44 +1,82 @@
 # draw2sql
 
+[![npm](https://img.shields.io/npm/v/draw2sql)](https://www.npmjs.com/package/draw2sql)
+
 Generate SQL DDL from a draw.io XML ER diagram.
+
+## Dependencies
+
+**Runtime:** Node.js 18 or later. No other dependencies — the published package is a single compiled JavaScript file.
+
+**To build from source:** Node.js 18+, TypeScript 5+, ts-node 10+.
+
+## Installation
+
+### Run without installing (recommended)
+
+No install needed. `npx` downloads and runs draw2sql on the fly:
+
+```powershell
+npx draw2sql --input schema.drawio --dialect postgres
+```
+
+### Install as a project dev dependency
+
+Add draw2sql to a project's dev dependencies so it's available via `npx` without downloading each time:
+
+```powershell
+npm install --save-dev draw2sql
+npx draw2sql --input schema.drawio --dialect postgres
+```
+
+Or add a script to your project's `package.json` and skip `npx` entirely:
+
+```json
+"scripts": {
+  "generate-sql": "draw2sql --input schema.drawio --dialect postgres"
+}
+```
+
+```powershell
+npm run generate-sql
+```
+
+`npm run` automatically looks in `node_modules/.bin`, so no `npx` is needed in scripts.
+
+### Install globally
+
+Install once and run as a plain command from anywhere:
+
+```powershell
+npm install -g draw2sql
+draw2sql --input schema.drawio --dialect postgres
+```
+
+To uninstall: `npm uninstall -g draw2sql`
 
 ## Usage
 
-Install dependencies first:
+If `--output` is omitted, the output file is derived from the input filename with a `.<dialect>.sql` extension:
 
 ```powershell
-npm install
+npx draw2sql --input schema.drawio --dialect postgres
+# writes schema.postgres.sql
 ```
 
-Run directly with ts-node:
+If `--output` already exists, draw2sql fails by default to prevent accidental overwrite. Use `--overwrite` (or `-f`) to replace it:
 
 ```powershell
-npx ts-node draw2sql.ts <input.drawio> <sqlFlavor> <output.sql>
+npx draw2sql --input schema.drawio --dialect postgres --overwrite
 ```
 
-Or with named args:
-
-```powershell
-npx ts-node draw2sql.ts --input design/schema.drawio --flavor postgres --output db/generated/schema.sql
-```
-
-Or build first and run the compiled output:
-
-```powershell
-npm run build
-node dist/draw2sql.js --input design/schema.drawio --flavor postgres --output db/generated/schema.sql
-```
-
-If `--output` already exists, draw2sql fails by default to prevent accidental overwrite. Use `--overwrite` (or `-f`) to replace the file.
-
-### Naming styles
+### Naming cases
 
 By default, draw2sql uses `db-default` naming:
 
-| SQL Flavor | Convention | Style Code | Traditional Identifier Quoting | If Unquoted |
+| SQL Dialect | Convention | Case | Traditional Identifier Quoting | If Unquoted |
 | --- | --- | --- | --- | --- |
 | `postgres` | `snake_case` | `snake` | `"name"` | Folded to lowercase (`MyTable` -> `mytable`); names with spaces fail unless quoted |
-| `mysql` | `snake_case` | `snake` | `` `name` `` | Works for simple names; reserved words/special chars fail; spaces require quoting |
+| `mariadb` / `mysql` | `snake_case` | `snake` | `` `name` `` | Works for simple names; reserved words/special chars fail; spaces require quoting |
 | `sqlite` | `snake_case` | `snake` | `"name"` | Usually case-insensitive matching; names with spaces require quoting |
 | `sqlserver` | `PascalCase` | `pascal` | `[name]` | Works for regular names; reserved words/special chars fail; spaces require quoting |
 | `oracle` | `SCREAMING_SNAKE_CASE` | `screaming_snake` | `"NAME"` | Folded to uppercase (`mytable` -> `MYTABLE`); names with spaces fail unless quoted |
@@ -46,27 +84,21 @@ By default, draw2sql uses `db-default` naming:
 Override with:
 
 ```powershell
-npx ts-node draw2sql.ts --input design/schema.drawio --flavor postgres --output db/generated/schema.sql --table-name-style snake --field-name-style snake
+npx draw2sql -i schema.drawio -d postgres --table-case snake --field-case snake
 ```
 
-Overwrite example:
-
-```powershell
-npx ts-node draw2sql.ts --input design/schema.drawio --flavor postgres --output db/generated/schema.sql --overwrite
-```
-
-Supported styles:
+Supported cases:
 - `as-drawn` (no transformation)
-- `db-default` (default; depends on `--flavor`)
+- `db-default` (default; depends on `--dialect`)
 - `pascal`
 - `camel`
 - `snake`
 - `screaming_snake`
 - `kebab`
 
-Supported flavors:
+Supported dialects:
 - `postgres`
-- `mysql`
+- `mariadb` (also accepts `mysql`)
 - `sqlserver`
 - `sqlite`
 - `oracle`
@@ -77,13 +109,13 @@ You can add a text block in draw.io that includes parameters. Example:
 
 ```text
 draw2sql
-sqlFlavor = oracle
+dialect = oracle
 schema = FILEOMATIC
 ```
 
 When present, recognized keys are captured and included in SQL output comments.
-- `sqlFlavor` (or `flavor`) overrides the CLI flavor.
-- `schema` is used to qualify generated table names.
+- `dialect` (also `sqldialect`, `flavor`, `sqlFlavor`) overrides the CLI dialect.
+- `schema` qualifies generated table names (e.g. `"myschema"."users"`). If omitted, table names are unqualified and the database will use its session default (`public` for postgres, `dbo` for sqlserver, the connected user's schema for oracle, etc.). Ignored for `sqlite`, which has no schema concept.
 
 ## Output strategy
 

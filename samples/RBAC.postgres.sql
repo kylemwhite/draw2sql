@@ -2,7 +2,7 @@
 -- Flavor: postgres
 -- Table Name Style: db-default (snake)
 -- Field Name Style: db-default (snake)
--- Generated UTC: 2026-03-01T21:19:36.839Z
+-- Generated UTC: 2026-03-01T21:53:40.456Z
 
 
 -- 1) Create missing tables
