@@ -1,6 +1,6 @@
 {
   "name": "draw2sql",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "description": "Generate SQL DDL from a draw.io XML ER diagram",
   "author": "Kyle White",
   "repository": {
