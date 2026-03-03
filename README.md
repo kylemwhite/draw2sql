@@ -20,6 +20,8 @@ No install needed. `npx` downloads and runs draw2sql on the fly:
 npx draw2sql --input schema.drawio --dialect postgres
 ```
 
+On first use, `npx` may prompt: _"Need to install the following packages: draw2sql. Ok to proceed?"_ — press `y` to continue. The package is cached in a temp location and the prompt won't appear again until the cache expires.
+
 ### Install as a project dev dependency
 
 Add draw2sql to a project's dev dependencies so it's available via `npx` without downloading each time:
@@ -116,6 +118,12 @@ schema = FILEOMATIC
 When present, recognized keys are captured and included in SQL output comments.
 - `dialect` (also `sqldialect`, `flavor`, `sqlFlavor`) overrides the CLI dialect.
 - `schema` qualifies generated table names (e.g. `"myschema"."users"`). If omitted, table names are unqualified and the database will use its session default (`public` for postgres, `dbo` for sqlserver, the connected user's schema for oracle, etc.). Ignored for `sqlite`, which has no schema concept.
+
+## Multi-page diagrams
+
+If your draw.io file has multiple pages (tabs), draw2sql merges all tables from all pages into a single SQL output file. There is no per-page separation. This is useful when pages represent subject areas of the same schema; if your pages represent entirely separate schemas, run draw2sql once per file.
+
+> **Note:** draw2sql requires the diagram to be saved in uncompressed XML format. If a page's content appears compressed (draw.io can optionally base64-encode page content), that page's tables will be silently skipped.
 
 ## Output strategy
 

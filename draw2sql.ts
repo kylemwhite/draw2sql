@@ -273,7 +273,12 @@ export class CliParser {
       process.exit(0);
     }
 
-    const positional = argv.filter((x) => !x.startsWith("-"));
+    const flagsWithValues = new Set(["--input", "-i", "--output", "-o", "--dialect", "-d", "--schema", "--table-case", "--table-style", "--field-case", "--column-case", "--field-style", "--column-style"]);
+    const positional: string[] = [];
+    for (let i = 0; i < argv.length; i++) {
+      if (flagsWithValues.has(argv[i])) { i++; }
+      else if (!argv[i].startsWith("-")) { positional.push(argv[i]); }
+    }
 
     let inputFile = "";
     let outputFile = "";
@@ -1030,6 +1035,10 @@ class Draw2SqlApp {
 
   run(argv: string[]): void {
     const args = CliParser.parse(argv);
+    if (!fs.existsSync(args.inputFile)) {
+      console.error(`Input file not found: ${args.inputFile}`);
+      process.exit(1);
+    }
     const xml = fs.readFileSync(args.inputFile, "utf8");
 
     const parsed = this.parser.parse(xml);
